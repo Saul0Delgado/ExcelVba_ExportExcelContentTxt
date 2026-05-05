@@ -1,0 +1,941 @@
+Representación Textual del archivo de Excel: "ExportExcelToTxt.xls"
+
+Resumen
+=======
+ * Hojas: 1
+ * Nombres Definidos: 3
+ * Módulos de Visual Basic: 6
+ * Líneas de código VB: 850
+
+Detalle
+=======
+
+Hojas:
+ [ExportToTxt]
+
+Contenido:
+[ExportToTxt]
+[A1] \_Componente\
+[A2] (ExportToTxt!_Componente) \ExportExcelToTxt\
+[A4] \=OFFSET(A1,1,1)\
+[B1] \_Versión\
+[B2] (ExportToTxt!_Versión) \vDev\
+[B4] \vDev\
+ DataValidation: Lista. [Fuente:"=OFFSET(A1,1,1)" ListaEnCelda:True ]
+ Mensaje=[Mostrar:True Titulo:"" Mensaje:"" ] 
+ Advertencia=[Mostrar:True Titulo:"" Mensaje:"" Estilo:Grave ] 
+ OmitirBlancos:True DatoActualEsVálido:True 
+
+[C1] \_AutoExport\
+[C2] (ExportToTxt!_AutoExport) \True\
+
+Nombres:
+ [ExportToTxt!_AutoExport] =ExportToTxt!$C$2
+ [ExportToTxt!_Componente] =ExportToTxt!$A$2
+ [ExportToTxt!_Versión] =ExportToTxt!$B$2
+
+Nombre del proyecto VB: [ExportToTxt]
+
+Módulos VBA:
+ [ThisWorkbook] Tipo: 100
+ [Sheet1] Tipo: 100
+ [Main] Tipo: 1
+ [ExportClass] Tipo: 2
+ [DvInfoClass] Tipo: 2
+ [Módulo1] Tipo: 1
+
+Codigo:
+[ThisWorkbook] 6 líneas de código.
+///--- BEGINNING OF MODULE ---
+Option Explicit
+
+Private Sub Workbook_BeforeSave(ByVal SaveAsUI As Boolean, Cancel As Boolean)
+Main.Main ThisWorkbook
+End Sub
+
+\\\--- END OF MODULE ---
+
+[Sheet1] 0 líneas de código.
+///--- BEGINNING OF MODULE ---
+\\\--- END OF MODULE ---
+
+[Main] 18 líneas de código.
+///--- BEGINNING OF MODULE ---
+'=======================================================================================
+' Exporta una representación textual del contenido de un libro de Excel.
+'=======================================================================================
+
+Option Explicit
+
+'Exportar el libro activo. Esta macro tiene asignado el shortcut Ctrl-T.
+'----------------------------------------------------------------------------------------------------
+Public Sub ExportActiveWorkbook()
+    Main ActiveWorkbook, True
+End Sub
+
+'Punto de entrada principal a la librería.
+'----------------------------------------------------------------------------------------------------
+Public Sub Main(bookToExport As Workbook, Optional visual As Boolean = False)
+    Dim Exporter As New ExportClass
+    Exporter.Main bookToExport, visual
+End Sub
+\\\--- END OF MODULE ---
+
+[ExportClass] 575 líneas de código.
+///--- BEGINNING OF MODULE ---
+Option Explicit
+'---------------------------------------------------------------------------------------
+' Module    : ExportClass
+' Author    : +
+' Date      : 18/06/2013
+' Purpose   : Encapsula la funcionalidad de la exportación.
+'---------------------------------------------------------------------------------------
+
+Private Const TOKEN_PRE_EXTENSION = ".TXTXL"
+Private Const TOKEN_EXTENSION = ".txt"
+
+Private Const TOKEN_HEADER = "Representación Textual del archivo de Excel: "
+Private Const TOKEN_SEPARATOR As String = "----------------------------------------------------------------------------------------------------"
+Private Const TOKEN_HOJAS_TITLE = "Hojas:"
+Private Const TOKEN_CONTENT_TITLE = "Contenido:"
+Private Const TOKEN_NOMBRES_TITLE = "Nombres:"
+Private Const TOKEN_MODULOS_TITLE = "Módulos VBA:"
+Private Const TOKEN_CODIGO_TITLE = "Codigo:"
+Private Const TOKEN_MODULE_BEGINS = "///--- BEGINNING OF MODULE ---"
+Private Const TOKEN_MODULE_END = "\\\--- END OF MODULE ---"
+Private Const SHEET_TITLE_CELL_LISTING_THRESHOLD = 25000 'El número de celdas entre la etiqueta de la hoja en el listado de celdas
+Private Const TOKEN_VBPROJECT_PROTECTED As String = "El proyecto VB está protegido y no hay acceso a los módulos."
+Private Const TOKEN_BOOK_IN_AUTOSTART As String = "El libro está en la ruta de auto-ejecución de Excel. No se exportará."
+
+Private Const TOKEN_MESSAGEBOX_TITLE As String = "Exportación a Texto"
+Private Const ERROR_1 As String = "Proceso cancelado manualmente."
+Private Const ERROR_2 As String = TOKEN_BOOK_IN_AUTOSTART
+Private Const ERROR_3 As String = "Proceso cancelado por [_AutoExport]"
+
+Private Const AUTO_START_PATH_PREFIX As String = "AppData"
+Private Const AUTO_START_PATH_SUFFIX As String = "Microsoft\Excel\XLSTART"
+
+Private FSO As New Scripting.FileSystemObject
+Private DvInfo As New DvInfoClass 'Clase que nos va a dar la información de DataValidation.
+
+Private Stream As TextStream 'El stream donde vamos a escribir el archivo
+Private flVisual As Boolean 'Bandera que define si la ejecución es con confirmación visual.
+
+Private BTE As Workbook '(BookToExport) Referencia al libro que vamos a exportar.
+Private bteSavedStatus As Boolean
+Private VBProjectIsProtected As Boolean
+Private StartTime As Date _
+        , EllapsedMinutes As String 'Para cronometrar el proceso.
+        
+Private ExpandedAutoStartPath As String
+Private flBookInAutoStartPath As Boolean
+
+Private Enum Formato
+    Default
+    Bloques
+End Enum
+Private FormatoAUsar As Formato
+
+Private ErrNum, ErrDesc 'Auxiliares para mantener los detalles del error si ocurre durante la ejecución de un delegado.
+
+Sub Main(bookToExport As Workbook, Optional visual As Boolean = False)
+On Error GoTo Catch
+    Set BTE = bookToExport
+    bteSavedStatus = BTE.Saved
+    flVisual = visual
+    PreFlight
+    FormatoAUsar = Formato.Default
+    'FormatoAUsar = Formato.Bloques
+   
+    'Abortar por _AutoExport
+    Dim rgAutoExport As Range
+    On Error Resume Next: Set rgAutoExport = bookToExport.Names("_AutoExport").RefersToRange: On Error GoTo Catch
+    If Not rgAutoExport Is Nothing Then _
+        If rgAutoExport.value <> True Then _
+            Err.Raise vbObjectError + 3, , ERROR_3
+    
+    'Inicio del proceso. Confirmación visual si aplica.
+    If flVisual Then If Not ConfirmarEjecucion Then Err.Raise vbObjectError + 1, , ERROR_1
+    
+    If Not flBookInAutoStartPath Then
+        Set Stream = FSO.CreateTextFile(GetTXTFileName(), True, False)
+        SaveAppSettings
+        StartTime = Date + Time
+        
+        GenResumen
+        
+        GenHojas
+        GenNombres
+        GenModulos
+        GenQueries
+        
+        MensajeFinal
+        If flVisual Then Call MsgBox("Proceso terminado en " & EllapsedMinutes & " minutos.", vbInformation Or vbDefaultButton1, TOKEN_MESSAGEBOX_TITLE)
+    End If
+Catch:
+    If Err.Number <> 0 Then
+        Dim MensajeDeError As String
+        MensajeDeError = "Ocurrió un error al correr el proceso de exportación:" & vbCrLf & vbCrLf _
+            & Err.Number & " " & Err.Description
+        If flVisual Then
+            MsgBox MensajeDeError, vbCritical, TOKEN_MESSAGEBOX_TITLE
+        Else: Debug.Print MensajeDeError
+        End If
+        If Not StreamClosed() Then Log MensajeDeError
+    End If
+    
+    RestoreAppSettings
+    If Not Stream Is Nothing Then Stream.Close
+End Sub
+
+'Realiza verificaciones antes de iniciar el proceso de exportación.
+'----------------------------------------------------------------------------------------------------
+Sub PreFlight()
+    'Construye y revisa la ruta de exclusión.
+    ExpandedAutoStartPath = FSO.BuildPath(Environ(AUTO_START_PATH_PREFIX), AUTO_START_PATH_SUFFIX)
+    If UCase(BTE.Path) = UCase(ExpandedAutoStartPath) Then
+        flBookInAutoStartPath = True
+        Debug.Print "El archivo a exportar está en la ruta AutoStart."
+    Else
+        flBookInAutoStartPath = False
+    End If
+    
+    'Ajusta la bandera si el proyecto de VB está protegido.
+    VBProjectIsProtected = BTE.VBProject.Protection = vbext_pp_locked
+End Sub
+
+'Obtiene el nombre del archivo a generar.
+'----------------------------------------------------------------------------------------------------
+Function GetTXTFileName() As String
+    Dim NombreDelArchivo As String _
+    , Ruta As String _
+    , NombreCompleto As String
+    
+    NombreDelArchivo = FSO.GetBaseName(BTE.NAME) & TOKEN_PRE_EXTENSION & TOKEN_EXTENSION
+    Ruta = BTE.Path
+    NombreCompleto = FSO.BuildPath(Ruta, NombreDelArchivo)
+    
+    GetTXTFileName = NombreCompleto
+End Function
+
+'Despliega confirmación visual inicial con posibilidad de cancelar
+'----------------------------------------------------------------------------------------------------
+Function ConfirmarEjecucion() As Boolean
+    'Preparamos el mensaje, aprovechando que ya se hizo el PreFlight.
+    Dim MensajeConfirmacion As String
+    
+    'Intro del mensaje con el nombre del archivo a exportar.
+    MensajeConfirmacion = "Inicio del proceso de exportación a texto del archivo:" & vbCrLf _
+        & BTE.NAME & vbCrLf & vbCrLf _
+        & "Dependiento del tamaño y complejidad del libro, puede tardar algunos minutos." & vbCrLf & vbCrLf
+    
+    MensajeConfirmacion = MensajeConfirmacion & "Verificación previa:" & vbCrLf
+    
+    'Libro en la ruta AutoStart
+    If flBookInAutoStartPath Then
+        MensajeConfirmacion = MensajeConfirmacion & "* " & UCase(TOKEN_BOOK_IN_AUTOSTART) & vbCrLf
+    End If
+    
+    'Estado de la protección del proyecto VB.
+    If VBProjectIsProtected Then
+        MensajeConfirmacion = MensajeConfirmacion & "* " & UCase(TOKEN_VBPROJECT_PROTECTED) & vbCrLf
+    Else
+        MensajeConfirmacion = MensajeConfirmacion & "* " & "El proyecto de Visual Basic es accesible." & vbCrLf
+    End If
+    
+    'Separador
+    MensajeConfirmacion = MensajeConfirmacion & vbCrLf
+    
+    'Pie del mensaje con el número de la versión.
+    MensajeConfirmacion = MensajeConfirmacion & GenVersionString()
+                   
+    Select Case MsgBox(MensajeConfirmacion, vbOKCancel Or vbInformation Or vbDefaultButton1, TOKEN_MESSAGEBOX_TITLE)
+    Case vbOK
+        ConfirmarEjecucion = True
+    End Select
+End Function
+
+'string que identifica la librería, el archivo que la contiene y la versión.
+'----------------------------------------------------------------------------------------------------
+Function GenVersionString() As String
+    GenVersionString = "[" & ThisWorkbook.NAME & "]"
+End Function
+
+'====================================================================================================
+'RESUMEN
+'====================================================================================================
+
+Sub GenResumen()
+    Log TOKEN_HEADER & """" & BTE.NAME & """" ' Encabezado (Nombre del archivo)
+    If flVisual Then Log "Fecha y hora de generación: " & Date + Time
+    Log
+    
+    Log "Resumen" & vbCrLf & "======="
+    Log " * Hojas: " & BTE.Worksheets.Count
+    Log " * Nombres Definidos: " & BTE.Names.Count
+    
+    If Not VBProjectIsProtected Then
+        Log " * Módulos de Visual Basic: " & BTE.VBProject.VBComponents.Count
+        Log " * Líneas de código VB: " & GetNumLineas()
+    Else
+        Log TOKEN_VBPROJECT_PROTECTED
+    End If
+    Log
+    Log "Detalle" & vbCrLf & "======="
+    Log
+End Sub
+
+'Obtiene el número total de líneas VBA.
+'----------------------------------------------------------------------------------------------------
+Function GetNumLineas() As Integer
+    'Iteramos los componentes para contar las líneas.
+    Dim NumLineas As Integer
+    Dim vbc As vbcomponent
+    For Each vbc In BTE.VBProject.VBComponents
+        NumLineas = NumLineas + vbc.CodeModule.CountOfLines
+    Next
+    GetNumLineas = NumLineas
+End Function
+
+'====================================================================================================
+
+Sub GenHojas()
+    '--- Lista de hojas
+    Log TOKEN_HOJAS_TITLE
+    IteraHojas "ImprimeNombreDeHoja"
+    Log
+    
+    '--- Contenido de cada hoja
+    Log TOKEN_CONTENT_TITLE
+    IteraHojas "ProcesaContenidoDeHoja"
+End Sub
+
+Sub GenNombres()
+    Log TOKEN_NOMBRES_TITLE
+    IteraNombres "ImprimeNombre"
+    Log
+End Sub
+
+Sub GenModulos()
+    Log "Nombre del proyecto VB: [" & BTE.VBProject.NAME & "]"
+    Log
+    
+    'Antes de intentar acceder a los módulos, verificamos que el proyecto no esté protegido:
+    If Not VBProjectIsProtected Then
+        Log TOKEN_MODULOS_TITLE
+        IteraModulos "ImprimeNombreDeModulo"
+        Log
+        
+        Log TOKEN_CODIGO_TITLE
+        IteraModulos "ProcesaModulo"
+    Else
+        Log TOKEN_VBPROJECT_PROTECTED
+    End If
+    Log
+End Sub
+
+Sub GenQueries()
+    Log
+    Log "== Power Queries =="
+    If BTE.Queries.Count = 0 Then
+        Log "No Existen Querys."
+        Log
+        Return
+    End If
+    Log "Num. Queries en el Libro: " & BTE.Queries.Count
+    Log
+    Dim q As WorkbookQuery: For Each q In BTE.Queries
+        Log "//" & q.NAME
+        Log q.Formula
+        Log
+    Next
+End Sub
+
+'MODULOS VB
+'====================================================================================================
+
+'Delegate
+Sub ProcesaModulo(vbcomp As vbcomponent, iterationIndex As Integer)
+On Error GoTo DelegateError
+    Dim CodeLines As Integer
+    CodeLines = vbcomp.CodeModule.CountOfLines
+    Log "[" & vbcomp.NAME & "] " & CodeLines & " líneas de código."
+    
+    Log TOKEN_MODULE_BEGINS
+    If CodeLines > 0 Then
+        Log vbcomp.CodeModule.Lines(1, CodeLines)
+    End If
+    Log TOKEN_MODULE_END
+    
+    Log
+DelegateError:
+    ErrNum = Err.Number: ErrDesc = Err.Description
+End Sub
+
+'Delegate
+Sub ImprimeNombreDeModulo(vbcomp As vbcomponent, iterationIndex As Integer)
+On Error GoTo DelegateError
+    Log " [" & vbcomp.NAME & "] Tipo: " & vbcomp.Type
+DelegateError:
+    ErrNum = Err.Number: ErrDesc = Err.Description
+End Sub
+
+'Delegate caller
+Sub IteraModulos(DelegateName As String)
+    Dim vbcomponent As vbcomponent
+    Dim ix As Integer
+    ix = 0
+    On Error GoTo ErrorAccesandoVBProject
+    For Each vbcomponent In BTE.VBProject.VBComponents
+        ix = ix + 1
+        ErrNum = 0: CallByName Me, DelegateName, VbMethod, vbcomponent, ix
+        If ErrNum <> 0 Then Err.Raise ErrNum, , ErrDesc
+    Next
+ErrorAccesandoVBProject: 'Si truena no hacemos nada.
+    Exit Sub
+End Sub
+
+'RANGOS NOMBRADOS
+'====================================================================================================
+
+'Delegate
+Sub ImprimeNombre(NAME As NAME, iterationIndex As Integer)
+On Error GoTo DelegateError
+    Log " [" & NAME.NAME & "] " & NAME.RefersTo
+DelegateError:
+    ErrNum = Err.Number: ErrDesc = Err.Description
+End Sub
+
+'Delegate caller
+Sub IteraNombres(DelegateName As String)
+    Dim NAME As NAME
+    Dim ix As Integer
+    ix = 0
+    For Each NAME In BTE.Names
+        ix = ix + 1
+        ErrNum = 0: CallByName Me, DelegateName, VbMethod, NAME, ix
+        If ErrNum <> 0 Then Err.Raise ErrNum, , ErrDesc
+    Next
+End Sub
+
+'HOJAS
+'====================================================================================================
+
+'Delegate
+Sub ImprimeNombreDeHoja(sheet As Worksheet, iterationIndex As Integer)
+On Error GoTo DelegateError
+    Dim Mensaje As String
+    If Not sheet.Visible Then Mensaje = Mensaje & " - Escondida"
+    If sheet.ProtectContents Then Mensaje = Mensaje & " - Protegida"
+    Log " [" & sheet.NAME & "]" & Mensaje
+DelegateError:
+    ErrNum = Err.Number: ErrDesc = Err.Description
+End Sub
+
+'Delegate
+Sub ProcesaContenidoDeHoja(sheet As Worksheet, iterationIndex As Integer)
+On Error GoTo DelegateError
+
+    Application.StatusBar = "Exportando hoja " & iterationIndex & " de " & sheet.Parent.Worksheets.Count & " - [" & sheet.NAME & "]"
+
+    'Determinamos si la hoja está protegida y hay que desprotegerla.
+    Dim Mensaje As String
+    Dim BkHojaProtegida As Boolean
+    If sheet.ProtectContents Then
+        BkHojaProtegida = True
+        Mensaje = Mensaje & " - Hoja Protegida"
+        
+        'La intentamos desproteger
+        On Error Resume Next: sheet.Unprotect " "
+        
+        If Not sheet.ProtectContents Then
+            Mensaje = Mensaje & " - Se desprotegió sin contraseña."
+        Else
+            Mensaje = Mensaje & " - NO SE DESPROTEGIÓ."
+        End If
+    End If
+    
+    'Procesamos las celdas.
+    Log "[" & sheet.NAME & "]" & Mensaje
+    Select Case FormatoAUsar
+        Case Formato.Default
+            IteraCeldas sheet, "ProcesaCelda"
+        Case Formato.Bloques
+            ExportaBloques sheet
+    End Select
+    Log
+    
+    'Reprotegemos si es necesario
+    If BkHojaProtegida Then sheet.Protect
+    
+    Application.StatusBar = False
+DelegateError:
+    ErrNum = Err.Number: ErrDesc = Err.Description
+End Sub
+
+'Delegate caller
+Sub IteraHojas(DelegateName As String)
+    Dim sheet As Worksheet
+    Dim ix As Integer
+    ix = 0
+    For Each sheet In BTE.Worksheets
+        ix = ix + 1
+        ErrNum = 0: CallByName Me, DelegateName, VbMethod, sheet, ix
+        If ErrNum <> 0 Then Err.Raise ErrNum, , ErrDesc
+    Next
+End Sub
+
+'CELDAS
+'====================================================================================================
+
+'Delegate
+Function ProcesaCelda(cell As Range, iterationIndex As Long) As Long
+On Error GoTo DelegateError
+    ProcesaCelda = iterationIndex 'Inmediatamente establecemos el valor
+    
+    Dim Direccion As String
+    Dim Contenido As String
+    Dim NombreDefinido As String
+    Dim CeldaSeProcesa As Boolean
+    
+    If cell.FormulaHidden And cell.Parent.ProtectContents Then 'Fórmula escondida y la hoja está protegida.
+        CeldaSeProcesa = True
+        Contenido = "**FÓRMULA INACCESIBLE**"
+    ElseIf cell.Formula <> "" Then 'Fórmula accesible, pero que no esté vacía.
+        CeldaSeProcesa = True
+        Contenido = ObtenerContenidoSegunFormato(cell)
+    End If
+    
+    If CeldaSeProcesa Then
+        'Insertamos el nombre de la hoja cada N celdas
+        If iterationIndex Mod SHEET_TITLE_CELL_LISTING_THRESHOLD = 0 And iterationIndex <> 0 Then
+            Log "[" & cell.Parent.NAME & "]"
+        End If
+        
+        Select Case FormatoAUsar
+            Case Formato.Default
+                Direccion = cell.Address(False, False): Direccion = "[" & Direccion & "] "
+                Contenido = "\" & Contenido & "\"
+            Case Formato.Bloques
+                Contenido = "> " & Contenido & ""
+        End Select
+        NombreDefinido = GetNameOfCell(cell): If NombreDefinido <> "" Then NombreDefinido = "(" & NombreDefinido & ") "
+        
+        On Error Resume Next
+        Log Direccion & NombreDefinido & Contenido
+        If Err.Number <> 0 Then
+            On Error GoTo DelegateError
+            Log Direccion & NombreDefinido & StrConv(Contenido, vbUnicode)
+        End If
+        
+        'Reportamos si la celda tiene DV o no:
+        If DvInfo.CellHasValidation(cell) Then
+            Log DvInfo.GetDVInfo()
+            Log
+        End If
+        
+        ProcesaCelda = iterationIndex + 1
+    End If
+DelegateError:
+    ErrNum = Err.Number: ErrDesc = Err.Description
+End Function
+
+'Masajea el contenido que se emite segun el formato del contenido de la celda.
+Function ObtenerContenidoSegunFormato(cell As Range)
+    Dim r: r = cell.Formula 'Valor por default si no cae en ningun caso especial
+    
+    'Fecha
+    If IsNumeric(cell.Formula) And IsDate(cell.value) Then r = cell.value
+    
+    'Boolean
+    If UCase(cell.Formula) = "TRUE" Or UCase(cell.Formula) = "FALSE" Then r = StrConv(cell.Formula, vbProperCase)
+    
+    ObtenerContenidoSegunFormato = r
+End Function
+
+'Delegate caller
+Sub IteraCeldas(sheet As Worksheet, DelegateName As String)
+    Dim cell As Range, column As Range
+    Dim ix As Long
+    ix = 0
+    For Each column In sheet.UsedRange.Cells.Columns
+        For Each cell In column.Cells
+            ErrNum = 0: ix = CallByName(Me, DelegateName, VbMethod, cell, ix)
+            If ErrNum <> 0 Then Err.Raise ErrNum, , ErrDesc
+        Next
+        DoEvents
+    Next
+End Sub
+
+Function GetNameOfCell(cell As Range) As String
+    On Error GoTo NoName
+    GetNameOfCell = cell.NAME.NAME
+Exit Function
+NoName:
+    GetNameOfCell = ""
+End Function
+
+'====================================================================================================
+
+Sub Log(Optional Mensaje As String)
+    Stream.WriteLine Mensaje
+End Sub
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa verdadero si al intentar accesar el Stream, marca error. (Se asume que está cerrada)
+'----------------------------------------------------------------------------------------------------
+Function StreamClosed() As Boolean
+    On Error GoTo IsClosed
+    StreamClosed = Stream.AtEndOfLine
+    StreamClosed = False 'No marcó error, el Stream no está cerrado.
+    Exit Function
+IsClosed:
+    StreamClosed = True
+End Function
+
+Sub SaveAppSettings()
+    On Error Resume Next: Application.Calculation = xlCalculationManual: On Error GoTo 0
+    BTE.Saved = bteSavedStatus
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    'Application.Interactive = False
+End Sub
+
+Sub RestoreAppSettings()
+    On Error Resume Next: Application.Calculation = xlCalculationAutomatic: On Error GoTo 0
+    BTE.Saved = bteSavedStatus
+    Application.Interactive = True
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.StatusBar = False
+End Sub
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Construye y loguea el mensaje final. Incluye la duración del proceso si fue visual.
+'----------------------------------------------------------------------------------------------------
+Sub MensajeFinal()
+    Dim MensajeFinal As String
+    
+    'Calculamos el tiempo empleado
+    EllapsedMinutes = FormatNumber(DateDiff("s", StartTime, Date + Time) / 60, 2)
+    
+    'Construimos el mensaje.
+    MensajeFinal = "** Fin del proceso de exportación."
+    If flVisual Then MensajeFinal = MensajeFinal & " Proceso realizado en " & EllapsedMinutes & " minutos."
+    MensajeFinal = MensajeFinal & " **"
+    
+    Log MensajeFinal
+    Log GenVersionString()
+End Sub
+
+'Experimento para los "Bloques"
+Sub ExportaBloques(sheet As Worksheet)
+    'Determinar el número de bloques
+    Dim rg As Range, blk As Range
+    'BUGWATCH: Cuando no hay celdas de alguno de los tipos, ocurre un error.
+    Set rg = Union(sheet.Cells.SpecialCells(xlCellTypeConstants), _
+                   sheet.Cells.SpecialCells(xlCellTypeFormulas))
+    Dim nBloques: nBloques = rg.Areas.Count
+    Log "Bloques: " & nBloques
+    Log
+    
+    For Each blk In rg.Areas
+        ExportaBloque blk
+        DoEvents
+    Next
+End Sub
+
+Sub ExportaBloque(blk As Range)
+    
+    Log "@ " & blk.Cells(1).Address(0, 0) & " [" & blk.Rows.Count & "x" & blk.Columns.Count & "]"
+    
+    Dim c As Integer, r As Integer
+    
+    For c = 1 To blk.Columns.Count
+        For r = 1 To blk.Rows.Count
+            ProcesaCelda blk(r, c), 0
+        Next
+    Next
+    Log
+End Sub
+\\\--- END OF MODULE ---
+
+[DvInfoClass] 221 líneas de código.
+///--- BEGINNING OF MODULE ---
+Option Explicit
+
+Public ErrNum, ErrDesc
+
+Private cell As Range 'La celda a examinar
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Asigna la celda a examinar.
+'----------------------------------------------------------------------------------------------------
+Public Sub SetCellToExamine(celda As Range)
+    Set cell = celda
+End Sub
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Verdadero si la celda tiene Data Validation asociada.
+'----------------------------------------------------------------------------------------------------
+Public Function CellHasValidation(celda As Range) As Boolean
+    SetCellToExamine celda
+On Error GoTo NoValidation
+    Dim dummy As XlDVType
+    dummy = celda.Validation.Type
+    CellHasValidation = True
+Exit Function
+NoValidation:
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Reune la información relevante de la data validation y lo regresa como un string para ser exportado.
+'----------------------------------------------------------------------------------------------------
+Public Function GetDVInfo() As String
+    Dim Res As String
+    Dim DVType As Long
+    Dim Prefijo As String
+    
+    DVType = GetDVType(cell)
+    Prefijo = " DataValidation: "
+    Prefijo = Prefijo & GetDVTypeName(DVType)
+    
+    Select Case DVType
+    Case XlDVType.xlValidateInputOnly '0
+        Prefijo = Prefijo & "."
+    
+    Case XlDVType.xlValidateList '3
+        Prefijo = Prefijo & ". [" & GetDVListInfo(cell.Validation) & "]"
+        
+    Case XlDVType.xlValidateCustom '7
+        Prefijo = Prefijo & ". [" & GetDVCustomTypeInfo(cell.Validation) & "]"
+        
+    Case Else
+        Prefijo = Prefijo & ". [" & GetDVSharedTypesInfo(cell.Validation) & "]"
+        
+    End Select
+    
+    Res = Prefijo
+    Res = Res & vbCrLf
+    
+    Res = Res & " " & GetDVGeneralInfo(cell.Validation)
+    
+    GetDVInfo = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa el XlDVType de una celda.
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVType(cell As Range) As Long
+    If Not CellHasValidation(cell) Then
+        GetDVType = 0
+    Else
+        GetDVType = cell.Validation.Type
+    End If
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa el nombre del tipo de la enumeración XlDVType
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVTypeName(value As XlDVType) As String
+    Dim Res As String
+    Select Case value
+    Case xlValidateInputOnly
+        Res = "InputOnly"
+    Case xlValidateWholeNumber
+        Res = "Número Entero"
+    Case xlValidateDecimal
+        Res = "Decimal"
+    Case xlValidateList
+        Res = "Lista"
+    Case xlValidateDate
+        Res = "Fecha"
+    Case xlValidateTime
+        Res = "Hora"
+    Case xlValidateTextLength
+        Res = "Longitud del texto"
+    Case xlValidateCustom
+        Res = "Personalizada"
+    End Select
+    GetDVTypeName = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa un string con la información compartida entre algunos tipos de validación
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVSharedTypesInfo(valob As Validation) As String
+    Dim Res As String
+    Res = Res & "Operador:""" & GetDVOperatorName(valob.operator) & """ "
+    Res = Res & "Formula1:""" & TraduceFormulas(valob.Formula1) & """ "
+    If valob.Formula2 <> "" Then Res = Res & "Formula2:""" & TraduceFormulas(valob.Formula2) & """ "
+    GetDVSharedTypesInfo = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa un string con la información de validación específica del tipo Lista.
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVListInfo(valob As Validation) As String
+    Dim Res As String
+    Res = Res & "Fuente:""" & TraduceFormulas(valob.Formula1) & """ "
+    Res = Res & "ListaEnCelda:" & booleaniza(valob.InCellDropdown) & " "
+    GetDVListInfo = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa un string con la información de validación específica del tipo Custom.
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVCustomTypeInfo(valob As Validation) As String
+    Dim Res As String
+    Res = Res & "Formula:""" & TraduceFormulas(valob.Formula1) & """ "
+    GetDVCustomTypeInfo = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Arma el string con las propiedades generales de todos los tipos de validación.
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVGeneralInfo(valob As Validation) As String
+    Dim Res As String
+    Res = Res & "Mensaje=[" & GetDVInputInfo(valob) & "] "
+    Res = Res & vbCrLf & " "
+    
+    Res = Res & "Advertencia=[" & GetDVAlertInfo(valob) & "] "
+    Res = Res & vbCrLf & " "
+    
+    Res = Res & "OmitirBlancos:" & booleaniza(valob.IgnoreBlank) & " "
+    Res = Res & "DatoActualEsVálido:" & booleaniza(valob.value) & " "
+    GetDVGeneralInfo = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Construye y regresa un string con la información del mensaje del objeto de validación.
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVInputInfo(valob As Validation) As String
+    Dim Res As String
+    Res = Res & "Mostrar:" & booleaniza(valob.ShowInput) & " "
+    Res = Res & "Titulo:""" & valob.InputTitle & """ "
+    Res = Res & "Mensaje:""" & Replace(valob.InputMessage, vbLf, "/") & """ "
+    GetDVInputInfo = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Construye y regresa un string con la información de la alerta del objeto de validación.
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVAlertInfo(valob As Validation) As String
+    Dim Res As String
+    Res = Res & "Mostrar:" & booleaniza(valob.ShowError) & " "
+    Res = Res & "Titulo:""" & valob.ErrorTitle & """ "
+    Res = Res & "Mensaje:""" & Replace(valob.ErrorMessage, vbLf, "/") & """ "
+    Res = Res & "Estilo:" & GetAlertStyleName(valob.alertStyle) & " "
+    GetDVAlertInfo = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa el nombre del tipo de la enum XlDVAlertStyle
+'----------------------------------------------------------------------------------------------------
+Private Function GetAlertStyleName(style As XlDVAlertStyle) As String
+    Dim Res As String
+    Select Case style
+    Case xlValidAlertStop
+        Res = "Grave"
+    Case xlValidAlertWarning
+        Res = "Advertencia"
+    Case xlValidAlertInformation
+        Res = "Información."
+    End Select
+    GetAlertStyleName = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa los nombres de los operadores.
+'----------------------------------------------------------------------------------------------------
+Private Function GetDVOperatorName(operator As Long) As String
+    Dim Res As String
+    Select Case operator
+    Case 1
+        Res = "Entre"
+    Case 2
+        Res = "No está entre"
+    Case 3
+        Res = "Igual a"
+    Case 4
+        Res = "No igual a"
+    Case 5
+        Res = "Mayor que"
+    Case 6
+        Res = "Menor que"
+    Case 7
+        Res = "Mayor o igual que"
+    Case 8
+        Res = "Menor o igual que"
+    Case Else
+        Res = "Desconocido"
+    End Select
+    GetDVOperatorName = Res
+End Function
+
+'----------------------------------------------------------------------------------------------------
+'Purpose: Regresa strings fijos que no cambien con el idioma de Office para los valores booleanos TRUE y FALSE.
+'----------------------------------------------------------------------------------------------------
+Function booleaniza(value As Boolean) As String
+    If value Then
+        booleaniza = "True"
+    Else
+        booleaniza = "False"
+    End If
+End Function
+\\\--- END OF MODULE ---
+
+[Módulo1] 30 líneas de código.
+///--- BEGINNING OF MODULE ---
+Option Explicit
+
+'=======================================================================================
+' Procedure : TraduceFormulas
+' Author    : +
+' Date      : 17/08/2012
+' Purpose   : Traduce algunos nombres de fórmulas integradas de Excel del español al inglés.
+'=======================================================================================
+Public Function TraduceFormulas(Cadena$) As String
+On Error GoTo TraduceFormulas_Error
+    
+    Dim sResult As String
+    sResult = Cadena
+    sResult = Replace(sResult, "DESREF(", "OFFSET(", , , vbTextCompare)
+    sResult = Replace(sResult, "INDIRECTO(", "INDIRECT(", , , vbTextCompare)
+    TraduceFormulas = sResult
+    
+    If sResult <> Cadena Then
+        Debug.Print " Se realizó traducción de nombres de funciones:"
+        Debug.Print "  - Cadena original: " & Cadena
+        Debug.Print "  - Cadena final: " & sResult
+    End If
+
+On Error GoTo 0
+Exit Function
+
+TraduceFormulas_Error:
+    Debug.Print "Error en TraduceFormulas().", Cadena
+End Function
+
+\\\--- END OF MODULE ---
+
+
+
+== Power Queries ==
+Num. Queries en el Libro: 2
+
+//Demo Query #2
+let
+    Origen = Table.FromColumns({Lines.FromBinary(File.Contents("D:\TEMP\LOGS\20211209_11504204.TXT"), null, null, 1252)})
+in
+    Origen
+
+//Demo Query
+let
+    Origen = Csv.Document(File.Contents("D:\Repos\ExportExcelToTxt\ExportExcelToTxt.TXTXL.txt"),[Delimiter=",", Columns=6, Encoding=1252, QuoteStyle=QuoteStyle.None]),
+    #"Tipo cambiado" = Table.TransformColumnTypes(Origen,{{"Column1", type text}, {"Column2", type text}, {"Column3", type text}, {"Column4", type text}, {"Column5", type text}, {"Column6", type text}})
+in
+    #"Tipo cambiado"
+
+** Fin del proceso de exportación. **
+[ExportExcelToTxt.xls]

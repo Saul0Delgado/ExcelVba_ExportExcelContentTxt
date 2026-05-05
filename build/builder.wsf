@@ -1,0 +1,6 @@
+<job id="Build">
+   <script language="VBScript" src="definition.vbs"/>
+
+   <!-- Builder script has to be last -->
+   <script language="VBScript" src="builder.vbs"/>
+</job>
